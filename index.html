@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Geo Boundary & Building Detection</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #f0f0f0; }
+    #map { height: 70vh; width: 100%; }
+    .controls, .info-panel {
+      padding: 15px; margin: 10px;
+      background: white; border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    button {
+      margin: 5px; padding: 10px 15px;
+      background: #007bff; color: white;
+      border: none; border-radius: 5px;
+      cursor: pointer;
+    }
+    button:hover { background: #0056b3; }
+    .stats {
+      display: flex; flex-wrap: wrap; gap: 15px;
+      margin-top: 10px;
+    }
+    .stat-card {
+      background: #f8f9fa; padding: 10px 15px;
+      border-left: 4px solid #007bff;
+      border-radius: 5px;
+      min-width: 150px;
+    }
+    .stat-value { font-size: 20px; color: #007bff; font-weight: bold; }
+    .stat-label { font-size: 13px; color: #555; }
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .welcome {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .logout-btn {
+      background: rgba(255,255,255,0.2);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.3);
+      padding: 8px 15px;
+      border-radius: 5px;
+      text-decoration: none;
+      transition: background 0.3s ease;
+    }
+    .logout-btn:hover {
+      background: rgba(255,255,255,0.3);
+    }
+    .auth-message {
+      text-align: center;
+      padding: 50px;
+      font-size: 18px;
+      color: #666;
+    }
+    .auth-message a {
+      color: #007bff;
+      text-decoration: none;
+    }
+    .auth-message a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+
+<div id="authCheck" style="display:none;">
+  <div class="auth-message">
+    <p>Please <a href="login.html">login</a> to access the Geo Boundary & Building Detection system.</p>
+  </div>
+</div>
+
+<div id="mainContent" style="display:none;">
+  <div class="header">
+    <div class="welcome" id="welcomeMessage">Welcome!</div>
+    <div style="display: flex; gap: 10px;">
+      <a href="my_boundaries.php" class="logout-btn">📊 My Boundaries</a>
+      <a href="database_viewer.php" class="logout-btn">🗄️ Database</a>
+      <a href="logout.php" class="logout-btn">Logout</a>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <div class="controls">
+    <button onclick="markCurrentLocation()">📍 Mark Current Location</button>
+    <button onclick="toggleAddMode()" id="addBtn">➕ Enable Add Mode</button>
+    <button onclick="getBoundary()" id="boundaryBtn" style="display:none;">📐 Get Boundary</button>
+    <button onclick="clearPoints()">🧹 Clear Points</button>
+    <button onclick="analyzePlace()" id="analyzeBtn" style="display:none;">📊 Analyze Place</button>
+    <button onclick="saveToDatabase()" id="saveBtn" style="display:none;">💾 Save to Database</button>
+    <div id="info"></div>
+  </div>
+
+  <div class="info-panel" id="infoPanel" style="display:none;">
+    <h3>Boundary Analysis Results</h3>
+    <div class="stats" id="stats"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+  // Check authentication status first
+  fetch('check_session.php')
+    .then(response => response.json())
+    .then(data => {
+      if (data.logged_in) {
+        // User is logged in, show main content
+        document.getElementById('authCheck').style.display = 'none';
+        document.getElementById('mainContent').style.display = 'block';
+        
+        // Update welcome message
+        document.getElementById('welcomeMessage').textContent = `Welcome, ${data.user_name}!`;
+        
+        // Initialize map and other functionality
+        initializeApp();
+      } else {
+        // User is not logged in, show auth message
+        document.getElementById('authCheck').style.display = 'block';
+        document.getElementById('mainContent').style.display = 'none';
+      }
+    })
+    .catch(error => {
+      console.error('Error checking authentication:', error);
+      // Show auth message on error
+      document.getElementById('authCheck').style.display = 'block';
+      document.getElementById('mainContent').style.display = 'none';
+    });
+
+  function initializeApp() {
+    const map = L.map('map').setView([11.1271, 78.6569], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19
+    }).addTo(map);
+
+    let addMode = false;
+    const points = [], markers = [], buildingLayers = [];
+    let polygon = null;
+
+    function markCurrentLocation() {
+      navigator.geolocation.getCurrentPosition(pos => {
+        addPoint(pos.coords.latitude, pos.coords.longitude, "📍 You are here");
+      }, () => alert("Location access denied."));
+    }
+
+    function toggleAddMode() {
+      addMode = !addMode;
+      document.getElementById("addBtn").innerText = addMode ? "🚫 Disable Add Mode" : "➕ Enable Add Mode";
+      map.getContainer().style.cursor = addMode ? 'crosshair' : '';
+    }
+
+    map.on("click", e => {
+      if (addMode) addPoint(e.latlng.lat, e.latlng.lng, "🖱️ Clicked Point");
+    });
+
+    function addPoint(lat, lng, label) {
+      const marker = L.marker([lat, lng]).addTo(map).bindPopup(label);
+      markers.push(marker);
+      points.push([lat, lng]);
+      updateUI();
+    }
+
+    function updateUI() {
+      const hasPolygon = points.length >= 3;
+      document.getElementById("boundaryBtn").style.display = hasPolygon ? "inline-block" : "none";
+      document.getElementById("analyzeBtn").style.display = hasPolygon ? "inline-block" : "none";
+      document.getElementById("saveBtn").style.display = hasPolygon ? "inline-block" : "none";
+    }
+
+    function getBoundary() {
+      if (polygon) map.removeLayer(polygon);
+      polygon = L.polygon([...points, points[0]], {
+        color: 'blue', fillOpacity: 0.3, weight: 2
+      }).addTo(map);
+      map.fitBounds(polygon.getBounds());
+      calculateStats();
+    }
+
+    function calculateStats() {
+      if (points.length < 3) return;
+
+      // Area using Shoelace formula
+      let area = 0;
+      for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        area += points[i][0] * points[j][1];
+        area -= points[j][0] * points[i][1];
+      }
+      area = Math.abs(area / 2);
+      const areaKm2 = area * (111 * 111);
+
+      // Perimeter
+      let perimeter = 0;
+      for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        const [lat1, lng1] = points[i], [lat2, lng2] = points[j];
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) ** 2 +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+          Math.sin(dLng / 2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        perimeter += R * c;
+      }
+
+      showStats({
+        points: points.length,
+        area: areaKm2.toFixed(2),
+        perimeter: perimeter.toFixed(2)
+      });
+    }
+
+    function showStats({ points, area, perimeter, buildings }) {
+      let html = `
+        <div class="stat-card"><div class="stat-value">${points}</div><div class="stat-label">Points Marked</div></div>
+        <div class="stat-card"><div class="stat-value">${area} km²</div><div class="stat-label">Approximate Area</div></div>
+        <div class="stat-card"><div class="stat-value">${perimeter} km</div><div class="stat-label">Perimeter</div></div>
+      `;
+      if (buildings !== undefined) {
+        html += `<div class="stat-card"><div class="stat-value">${buildings}</div><div class="stat-label">Buildings Found</div></div>`;
+      }
+      document.getElementById("stats").innerHTML = html;
+      document.getElementById("infoPanel").style.display = "block";
+    }
+
+    function clearPoints() {
+      markers.forEach(m => map.removeLayer(m));
+      if (polygon) map.removeLayer(polygon);
+      buildingLayers.forEach(layer => map.removeLayer(layer));
+      points.length = 0;
+      markers.length = 0;
+      buildingLayers.length = 0;
+      polygon = null;
+      document.getElementById("infoPanel").style.display = "none";
+      updateUI();
+    }
+
+    function analyzePlace() {
+      if (points.length < 3) return alert("Mark at least 3 points.");
+
+      const button = document.getElementById("analyzeBtn");
+      button.disabled = true;
+      button.innerText = "📊 Analyzing...";
+
+      // Clear previous building layers
+      buildingLayers.forEach(layer => map.removeLayer(layer));
+      buildingLayers.length = 0;
+
+      fetch("http://localhost:5000/analyze-place", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ polygon: points })
+      })
+      .then(res => res.json())
+      .then(data => {
+        const statsDiv = document.getElementById("stats");
+        statsDiv.innerHTML = ""; // Clear previous stats
+
+        // Show building count
+        const buildingStat = document.createElement("div");
+        buildingStat.className = "stat-card";
+        buildingStat.innerHTML = `<div class="stat-value">${data.total_buildings}</div><div class="stat-label">Buildings Found</div>`;
+        statsDiv.appendChild(buildingStat);
+
+        // Show total area
+        const totalAreaStat = document.createElement("div");
+        totalAreaStat.className = "stat-card";
+        totalAreaStat.innerHTML = `<div class="stat-value">${data.total_area_km2} km²</div><div class="stat-label">Total Area</div>`;
+        statsDiv.appendChild(totalAreaStat);
+
+        // Show agricultural land
+        const agriStat = document.createElement("div");
+        agriStat.className = "stat-card";
+        agriStat.innerHTML = `<div class="stat-value">${data.agricultural_area_km2} km²</div><div class="stat-label">Agricultural Land</div>`;
+        statsDiv.appendChild(agriStat);
+
+        // Show other land
+        const otherStat = document.createElement("div");
+        otherStat.className = "stat-card";
+        otherStat.innerHTML = `<div class="stat-value">${data.other_land_area_km2} km²</div><div class="stat-label">Other Land</div>`;
+        statsDiv.appendChild(otherStat);
+
+        // Show building outlines
+        if (data.buildings && data.buildings.length > 0) {
+          data.buildings.forEach(coords => {
+            const outline = coords.map(([lat, lng]) => [lat, lng]);
+            const buildingLayer = L.polygon(outline, { 
+              color: 'red', 
+              fillOpacity: 0.4,
+              weight: 2
+            }).addTo(map);
+            buildingLayers.push(buildingLayer);
+          });
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        alert("Error analyzing place.");
+      })
+      .finally(() => {
+        button.disabled = false;
+        button.innerText = "📊 Analyze Place";
+      });
+    }
+
+    function saveToDatabase() {
+      if (points.length < 3) return alert("Mark at least 3 points.");
+
+      const button = document.getElementById("saveBtn");
+      button.disabled = true;
+      button.innerText = "💾 Saving...";
+
+      // Get the current analysis data from the stats
+      const statsDiv = document.getElementById("stats");
+      const statCards = statsDiv.querySelectorAll('.stat-card');
+      
+      let analysisData = {
+        total_buildings: 0,
+        total_area_km2: 0,
+        agricultural_area_km2: 0,
+        other_land_area_km2: 0
+      };
+
+      // Extract data from stat cards if they exist
+      statCards.forEach(card => {
+        const label = card.querySelector('.stat-label').textContent;
+        const value = parseFloat(card.querySelector('.stat-value').textContent);
+        
+        if (label === 'Buildings Found') {
+          analysisData.total_buildings = value;
+        } else if (label === 'Total Area') {
+          analysisData.total_area_km2 = value;
+        } else if (label === 'Agricultural Land') {
+          analysisData.agricultural_area_km2 = value;
+        } else if (label === 'Other Land') {
+          analysisData.other_land_area_km2 = value;
+        }
+      });
+
+      // If no analysis data is available, calculate basic stats
+      if (analysisData.total_area_km2 === 0) {
+        // Calculate area using Shoelace formula
+        let area = 0;
+        for (let i = 0; i < points.length; i++) {
+          const j = (i + 1) % points.length;
+          area += points[i][0] * points[j][1];
+          area -= points[j][0] * points[i][1];
+        }
+        area = Math.abs(area / 2);
+        analysisData.total_area_km2 = area * (111 * 111);
+        analysisData.other_land_area_km2 = analysisData.total_area_km2;
+      }
+
+      // Send data to PHP backend
+      fetch("save_boundary.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          polygon: points,
+          analysis: analysisData
+        })
+      })
+      .then(res => {
+        console.log("Response status:", res.status);
+        return res.json();
+      })
+      .then(data => {
+        console.log("Response data:", data);
+        if (data.success) {
+          alert("✅ " + data.message);
+        } else {
+          alert("❌ Error: " + (data.error || "Failed to save data"));
+        }
+      })
+      .catch(err => {
+        console.error("Fetch error:", err);
+        alert("❌ Error saving to database. Please check console for details.");
+      })
+      .finally(() => {
+        button.disabled = false;
+        button.innerText = "💾 Save to Database";
+      });
+    }
+
+    // Make functions globally accessible
+    window.markCurrentLocation = markCurrentLocation;
+    window.toggleAddMode = toggleAddMode;
+    window.getBoundary = getBoundary;
+    window.clearPoints = clearPoints;
+    window.analyzePlace = analyzePlace;
+    window.saveToDatabase = saveToDatabase;
+  }
+</script>
+</body>
+</html>
